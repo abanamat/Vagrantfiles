@@ -1,3 +1,7 @@
+# https://gist.github.com/leifg/4713995
+# https://github.com/sprotheroe/vagrant-disksize/issues/12
+# https://github.com/sprotheroe/vagrant-disksize/blob/master/lib/vagrant/disksize/actions.rb
+
 class VagrantPlugins::ProviderVirtualBox::Action::SetName
     alias_method :original_call, :call
     def call(env)
