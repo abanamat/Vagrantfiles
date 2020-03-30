@@ -1,6 +1,8 @@
 # https://gist.github.com/leifg/4713995
-# https://github.com/sprotheroe/vagrant-disksize/issues/12
 # https://github.com/sprotheroe/vagrant-disksize/blob/master/lib/vagrant/disksize/actions.rb
+
+VAGRANT_ROOT = File.dirname(File.expand_path(__FILE__))
+VM_HOSTNAME = "pvesoftraid"
 
 class VagrantPlugins::ProviderVirtualBox::Action::SetName
     alias_method :original_call, :call
@@ -8,7 +10,7 @@ class VagrantPlugins::ProviderVirtualBox::Action::SetName
         ui = env[:ui]
         driver = env[:machine].provider.driver
 
-        second_disk_name = "sdb"
+        second_disk_name = "disk_raid"
         vm_name = env[:machine].name
         data_dir = env[:machine].data_dir
         vm_uuid = driver.instance_eval { @uuid }
@@ -70,9 +72,9 @@ class VagrantPlugins::ProviderVirtualBox::Action::SetName
         disks = identify_disks(driver, vm_uuid)
         target_disk = disks.first    # TODO Shouldn't assume that the first disk is the one we want to check
         target_disk_size = get_disk_size(driver, target_disk)
+        target_controller_port = target_disk[:name].split("-", -2)[1].to_i
         target_controller_name = target_disk[:name].gsub(/-([0-9]+)-([0-9]+)/,'')
-        target_controller_device = target_disk[:name].split("-", -2)[1]
-        target_controller_port = target_disk[:name].split("-").last.to_i
+        target_controller_device = target_disk[:name].split("-").last.to_i
         if target_controller_name.match("IDE")
           target_controller_type = 'ide'
         elsif target_controller_name.match("SAS")
@@ -83,15 +85,14 @@ class VagrantPlugins::ProviderVirtualBox::Action::SetName
           target_controller_type = 'unknown'
         end
 
-        ui.info "target_disk_uuid: '#{target_disk[:uuid]}'"
-        ui.info "target_disk_name: '#{target_disk[:name]}'"
-        ui.info "target_disk_size: '#{target_disk_size}'"
-        ui.info "target_controller_name: '#{target_controller_name}'"
-        ui.info "target_controller_device: '#{target_controller_device}'"
-        ui.info "target_controller_port: '#{target_controller_port}'"
-        ui.info "target_controller_type: '#{target_controller_type}'"
+        ui.info "vm_main_controller_name: '#{target_controller_name}'"
+        ui.info "vm_main_controller_port: '#{target_controller_port}'"
+        ui.info "vm_main_controller_device: '#{target_controller_device}'"
+        ui.info "vm_main_controller_type: '#{target_controller_type}'"
 
-        ui.info "Create '#{data_dir}/#{vm_name}_#{second_disk_name}\.vmdk'..."
+        ui.warn "Removing unused disks can be done the following way: VBoxManage closemedium disk a87ec6fc-7fcf-4c01-93a2-59cc3708e353 --delete"
+
+        ui.info "create '#{data_dir}/#{vm_name}_#{second_disk_name}\.vmdk'..."
         driver.execute("createhd",
             "--filename", "#{data_dir}" + "/" + "#{vm_name}_#{second_disk_name}" + ".vmdk",
             "--size", "#{target_disk_size}",
@@ -100,7 +101,7 @@ class VagrantPlugins::ProviderVirtualBox::Action::SetName
 
         target_controller_port += 1
 
-        ui.info "Attach '#{data_dir}/#{vm_name}_#{second_disk_name}\.vmdk' to '#{target_controller_name}' port '#{target_controller_port}'..."
+        ui.info "attach '#{data_dir}/#{vm_name}_#{second_disk_name}\.vmdk' to '#{target_controller_name}' port '#{target_controller_port}'..."
         driver.execute(
             "storageattach", vm_uuid,
             "--storagectl", "#{target_controller_name}",
@@ -110,6 +111,8 @@ class VagrantPlugins::ProviderVirtualBox::Action::SetName
             "--medium", "#{data_dir}" + "/" + "#{vm_name}_#{second_disk_name}" + ".vmdk"
         )
 
+        ui.warn "web-ui at https://192.0.2.2 root vagrant"
+
         original_call(env)
     end
 end
@@ -117,19 +120,31 @@ end
 Vagrant.configure("2") do |config|
   config.vm.box = "aairey/proxmoxve"
   config.vm.box_version = "0.1.0"
-  (1..1).each do |i|
-    config.vm.define "host#{i}" do |node|
-      node.vm.hostname = "host#{i}"
-      node.vm.network "private_network", ip: "192.0.2.#{10+i}"
-      config.vm.provider :virtualbox do |vb|
-        vb.name = "host#{i}"
-        vb.cpus = 1
-        vb.memory = "2048"
-#        vb.customize ["storagectl", :id, "--add", "sas", "--name", "SAS Controller" , "--portcount", 2, "--hostiocache", "on"]
-#        vb.customize ['createhd', '--filename', "host_#{i}b.vdi", '--size', 8192]
-#        vb.customize ['storageattach', :id, '--storagectl', "SAS Controller", '--port', 1, '--type', 'hdd', '--medium', "host_#{i}a.vdi" ]
-#        vb.customize ['storageattach', :id, '--storagectl', "SAS Controller", '--port', 0, '--type', 'hdd', '--medium', "host_#{i}b.vdi" ]
-      end
+  config.vm.define "#{VM_HOSTNAME}" do |node|
+    node.vm.hostname = "#{VM_HOSTNAME}"
+    node.vm.network "private_network", ip: "192.0.2.2"
+    config.vm.provider :virtualbox do |vb|
+      vb.name = "#{VM_HOSTNAME}"
+      vb.cpus = 2
+      vb.memory = "2048"
+      vb.customize ["storagectl", :id,
+        "--add", "sas",
+        "--name", "SAS Controller",
+        "--portcount", 1,
+        "--hostiocache", "on"
+      ]
+      vb.customize ["createhd",
+        "--filename", "#{VAGRANT_ROOT}" + "/" + "#{VM_HOSTNAME}" + "_disk_data.vmdk",
+        "--size", "8192",
+        "--format", "VMDK"
+      ]
+      vb.customize ["storageattach", :id,
+        "--storagectl", "SAS Controller",
+        "--port", "0",
+        "--device", "0",
+        "--type", "hdd",
+        "--medium", "#{VAGRANT_ROOT}" + "/" + "#{VM_HOSTNAME}" + "_disk_data.vmdk"
+      ]
     end
   end
 end
