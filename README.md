@@ -4,7 +4,7 @@ A Vagrant file used to create second drive with exactly the same size as the fir
 
 <details>
 <summary>Proxmox VE: convert a single drive system to RAID1</summary>
-Many thanks for [this](https://www.prado.lt/how-to-set-up-software-raid1-on-a-running-lvm-system-incl-grub2-configuration-ubuntu-18-04)
+Many thanks for this https://www.prado.lt/how-to-set-up-software-raid1-on-a-running-lvm-system-incl-grub2-configuration-ubuntu-18-04
 
 Make sure the following packages are installed
 ```shell
