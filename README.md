@@ -4,17 +4,17 @@ A Vagrant file used to create second drive with exactly the same size as the fir
 
 <details>
 <summary>Proxmox VE: convert a single drive system to RAID1</summary>
-Many thanks for this article <https://www.prado.lt/how-to-set-up-software-raid1-on-a-running-lvm-system-incl-grub2-configuration-ubuntu-18-04>
+Many thanks for [this](https://www.prado.lt/how-to-set-up-software-raid1-on-a-running-lvm-system-incl-grub2-configuration-ubuntu-18-04)
 
 Make sure the following packages are installed
 ```shell
-apt-get update &amp;&amp; apt install -y initramfs-tools mdadm
+apt-get update && apt install -y initramfs-tools mdadm
 ```
 Show current situation
 ```shell
-lsblk &amp;&amp; blkid
+lsblk && blkid
 fdisk -l /dev/sda /dev/sdc
-pvdisplay &amp;&amp; vgdisplay &amp;&amp;lvdisplay
+pvdisplay && vgdisplay &&lvdisplay
 ```
 Load a few kernel modules (to avoid a reboot):
 ```shell
@@ -75,11 +75,11 @@ cat /proc/mdstat
 ```
 Prepare LVM RAID array for LVM
 ```shell
-pvcreate /dev/md3 &amp;&amp; pvdisplay
+pvcreate /dev/md3 && pvdisplay
 ```
 Add LVM RAID array to existing volume group
 ```shell
-vgextend pve /dev/md3 &amp;&amp; pvdisplay &amp;&amp; vgdisplay
+vgextend pve /dev/md3 && pvdisplay && vgdisplay
 ```
 ## If got the error: Insufficient free space ..
 > If the old Allocated PE is larger than the new Free PE
@@ -92,7 +92,7 @@ vgextend pve /dev/md3 &amp;&amp; pvdisplay &amp;&amp; vgdisplay
 > ```shell
 > pvs -q -o pv_name,pv_pe_count,pv_pe_alloc_count \
 > |awk '{if($1=="/dev/sda3"){ope=$3}else if($1=="/dev/md3")\
-> {fpe=$2}}END{if(int(ope)&gt;int(fpe)){rs=(int(ope-fpe)*4);\
+> {fpe=$2}}END{if(int(ope)>int(fpe)){rs=(int(ope-fpe)*4);\
 > print("lvresize -L-"rs"m /dev/pve/swap")}}'
 > ```
 > Run computed resize command
@@ -103,13 +103,15 @@ vgextend pve /dev/md3 &amp;&amp; pvdisplay &amp;&amp; vgdisplay
 Adjust `mdadm.conf` to the new situation
 ```shell
 cp /etc/mdadm/mdadm.conf /etc/mdadm/mdadm.conf_orig
-mdadm --examine --scan &gt;&gt; /etc/mdadm/mdadm.conf
+mdadm --examine --scan >> /etc/mdadm/mdadm.conf
 cat /etc/mdadm/mdadm.conf
 ```
 Update GRUB2 bootloader configuration
 ```shell
 update-grub
-# Next we adjust our ramdisk to the new situation
+```
+Next we adjust our ramdisk to the new situation
+```shell
 update-initramfs -u
 ```
 Move the contents of LVM partition `/dev/sda3` to LVM RAID array
@@ -122,7 +124,7 @@ vgreduce pve /dev/sda3
 ```
 And tell the system to not use `/dev/sda3` anymore for LVM
 ```shell
-pvremove /dev/sda3 &amp;&amp; pvdisplay
+pvremove /dev/sda3 && pvdisplay
 ```
 Change the partition type of `/dev/sda3` to Linux raid autodetect
 ```shell
@@ -149,18 +151,18 @@ Adjust ramdisk to the new situation
 ```shell
 update-initramfs -u
 ```
-Failed to send WATCHDOG=1 notification message: Transport endpoint is not connected
+> `Failed to send WATCHDOG=1 notification message: Transport endpoint is not connected`
 When trying to reboot for the first time. Workaround:
 ```shell
-echo 1 &gt; /proc/sys/kernel/sysrq
-sync &amp;&amp; echo b &gt; /proc/sysrq-trigger
+echo 1 > /proc/sys/kernel/sysrq
+sync && echo b > /proc/sysrq-trigger
 ```
 # TESTING
 ```shell
 mdadm --manage /dev/md3 --fail /dev/sda3
 mdadm --manage /dev/md3 --remove /dev/sda3
 sgdisk -o /dev/sda
-sync &amp;&amp; reboot
+sync && reboot
 
 sgdisk -R /dev/sda /dev/sdc
 sgdisk -G /dev/sda
