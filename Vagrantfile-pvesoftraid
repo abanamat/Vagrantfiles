@@ -147,4 +147,7 @@ Vagrant.configure("2") do |config|
       ]
     end
   end
+  config.vm.provision "shell", inline: <<-SHELL
+    uname -a
+  SHELL
 end
