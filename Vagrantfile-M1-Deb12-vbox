@@ -1,0 +1,70 @@
+VM_CPUS = 2
+VM_MEMORY = 2048
+VM_COUNT = 1
+# VirtualBox will only allow IP addresses in 192.168.56.0/21 range to be assigned to host-only adapters
+VM_NET_PREFIX="192.168.58"
+IMAGE = "bento/debian-12.11"
+IMAGE_VERSION = "202508.03.0"
+SSH_AGENT_PUBLIC_KEYS = `ssh-add -L 2>&1`
+
+# Tells us if the host system is an Apple Silicon Mac running Rosetta optionally
+def is_arm64()
+  `uname -m 2>&1|grep -q "arm64" || arch -64 sh -c "sysctl -in sysctl.proc_translated|grep -q ^0$"`
+end
+
+# Tells us if the host system is not an Apple Silicon Mac
+def is_amd64()
+  `uname -m 2>&1|grep -q "x86_64"`
+end
+
+Vagrant.configure("2") do |config|
+  if Vagrant.has_plugin?("vagrant-proxyconf")
+    if ENV["HTTPS_PROXY"]
+      config.proxy.https = ENV["HTTPS_PROXY"]
+    end
+    if ENV["NO_PROXY"]
+      config.proxy.no_proxy = ENV["NO_PROXY"]
+    end
+  end
+  if is_arm64()
+    IMAGE_ARCH = "arm64"
+  elsif is_amd64()
+    IMAGE_ARCH = "amd64"
+  else
+    IMAGE_ARCH = ":auto"
+  end
+  (1..VM_COUNT).each do |i|
+    config.vm.define "node#{i}" do |subconfig|
+      subconfig.vm.box_check_update = false
+      subconfig.vm.box = IMAGE
+      subconfig.vm.box_version = IMAGE_VERSION
+      subconfig.vm.box_architecture = IMAGE_ARCH
+      subconfig.vm.hostname = "node#{i}"
+      subconfig.vm.network :private_network, ip: "#{VM_NET_PREFIX}.#{i + 10}"
+      subconfig.vm.network :forwarded_port, guest: 22, host: "#{i + 20000}", id: 'ssh'
+      subconfig.vm.provider :virtualbox do |vb|
+        vb.gui = false
+        vb.cpus = VM_CPUS
+        vb.memory = VM_MEMORY
+        vb.linked_clone = false
+      end
+      subconfig.vm.provision "shell", inline: <<-SHELL
+        echo -n "#{SSH_AGENT_PUBLIC_KEYS}" >> /home/vagrant/.ssh/authorized_keys
+        sed -i -e 's/.*SystemMaxUse.*/SystemMaxUse=50M/' -e 's/.*RuntimeMaxUse.*/RuntimeMaxUse=30M/' /etc/systemd/journald.conf
+        echo "w /sys/kernel/mm/transparent_hugepage/enabled    -    -    -     -     never" > /etc/tmpfiles.d/disable-thp.conf
+        echo "w /sys/kernel/mm/transparent_hugepage/defrag    -    -    -     -     never" >> /etc/tmpfiles.d/disable-thp.conf
+        systemd-tmpfiles --create --prefix=/sys/kernel/mm/transparent_hugepage/ /etc/tmpfiles.d/disable-thp.conf
+        echo "vm.overcommit_memory=1" >> /etc/sysctl.d/00-sysctl.conf
+        echo "vm.overcommit_ratio=50" >> /etc/sysctl.d/00-sysctl.conf
+        echo "vm.swappiness=0" >> /etc/sysctl.d/00-sysctl.conf
+        echo "vm.min_free_kbytes=32000" >> /etc/sysctl.d/00-sysctl.conf
+        service procps force-reload
+        swapoff -a
+        sed -i -e '/.*swap.*/d' /etc/fstab && systemctl daemon-reload
+        echo 'APT::Install-Recommends "0";' > /etc/apt/apt.conf.d/01norecommend
+        echo 'APT::Install-Suggests "0";' >> /etc/apt/apt.conf.d/01norecommend
+        sh -c 'DEBIAN_FRONTEND=noninteractive apt-get -y -qq install chrony'
+      SHELL
+    end
+  end
+end
