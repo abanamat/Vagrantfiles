@@ -1,0 +1,131 @@
+VM_COUNT = 1
+
+# optional: to reassign vm resources
+# VM_OVERRIDES = {
+#   1 => "large",
+#   2 => "medium"
+#}
+
+# https://www.virtualbox.org/manual/ch06.html#network_hostonly
+VM_NET_PREFIX="192.168.58"
+IMAGE = "bento/ubuntu-24.04"
+IMAGE_VERSION = "202508.03.0"
+SSH_AGENT_PUBLIC_KEYS = `ssh-add -L 2>&1`
+
+# ==========================================
+
+VM_MAX_TOTAL_CPUS = 4 # hw total: sysctl -n hw.ncpu
+VM_MAX_TOTAL_MEMORY = 8192 # hw total: print $(( $(sysctl -n hw.memsize) / 1024 / 1024 ))
+VM_DEFAULT_SIZE = "small"
+
+def get_resources_by_size(size)
+  case size.to_s.downcase
+  when "small" then return 1, 768
+  when "large" then return 2, 2560
+  else return 1, 1280 # "medium"
+  end
+end
+
+total_requested_cpus = 0
+total_requested_mem  = 0
+vm_configs = {}
+
+(1..VM_COUNT).each do |i|
+  if defined?(VM_OVERRIDES) && VM_OVERRIDES.is_a?(Hash) && VM_OVERRIDES.key?(i)
+    size = VM_OVERRIDES[i]
+  else
+    size = VM_DEFAULT_SIZE
+  end
+  cpus, mem = get_resources_by_size(size)
+  vm_configs[i] = { :size => size, :cpus => cpus, :mem => mem }
+  total_requested_cpus += cpus
+  total_requested_mem  += mem
+end
+
+if total_requested_cpus > VM_MAX_TOTAL_CPUS
+  abort("\e[31m[ERROR] Requested CPUs (#{total_requested_cpus}) exceeds VM_MAX_TOTAL_CPUS (#{VM_MAX_TOTAL_CPUS})!\e[0m")
+end
+
+if total_requested_mem > VM_MAX_TOTAL_MEMORY
+  abort("\e[31m[ERROR] Requested Memory (#{total_requested_mem}MB) exceeds VM_MAX_TOTAL_MEMORY (#{VM_MAX_TOTAL_MEMORY}MB)!\e[0m")
+end
+
+# ==========================================
+
+# https://github.com/hashicorp/vagrant/issues/12610#issuecomment-1117967936
+# Tells us if the host system is an Apple Silicon Mac running Rosetta optionally
+def is_arm64()
+  `uname -m 2>&1|grep -q "arm64" || arch -64 sh -c "sysctl -in sysctl.proc_translated|grep -q ^0$"`
+end
+
+# Tells us if the host system is not an Apple Silicon Mac
+def is_amd64()
+  `uname -m 2>&1|grep -q "x86_64"`
+end
+
+Vagrant.configure("2") do |config|
+  if Vagrant.has_plugin?("vagrant-proxyconf")
+    if ENV["HTTPS_PROXY"]
+      config.proxy.https = ENV["HTTPS_PROXY"]
+    end
+    if ENV["NO_PROXY"]
+      config.proxy.no_proxy = ENV["NO_PROXY"]
+    end
+  end
+  if is_arm64()
+    IMAGE_ARCH = "arm64"
+  elsif is_amd64()
+    IMAGE_ARCH = "amd64"
+  else
+    IMAGE_ARCH = ":auto"
+  end
+  (1..VM_COUNT).each do |i|
+    config.vm.define "node#{i}" do |subconfig|
+      subconfig.vm.box_check_update = false
+      subconfig.vm.box = IMAGE
+      subconfig.vm.box_version = IMAGE_VERSION
+      subconfig.vm.box_architecture = IMAGE_ARCH
+      subconfig.vm.hostname = "node#{i}"
+      subconfig.vm.network :private_network, ip: "#{VM_NET_PREFIX}.#{i + 10}"
+      subconfig.vm.network :forwarded_port, guest: 22, host: "#{i + 20000}", id: 'ssh'
+      cpus = vm_configs[i][:cpus]
+      mem = vm_configs[i][:mem]
+      size = vm_configs[i][:size]
+      puts "==> Node node#{i} [#{size.upcase}]: #{cpus} CPU, #{mem}MB RAM"
+      subconfig.vm.provider :virtualbox do |vb|
+        vb.gui = false
+        vb.cpus = cpus
+        vb.memory = mem
+        vb.linked_clone = false
+      end
+      subconfig.vm.provision "shell", inline: <<-SHELL
+        echo -n "#{SSH_AGENT_PUBLIC_KEYS}" >> /home/vagrant/.ssh/authorized_keys
+        sed -i -e 's/.*SystemMaxUse.*/SystemMaxUse=50M/' -e 's/.*RuntimeMaxUse.*/RuntimeMaxUse=30M/' /etc/systemd/journald.conf
+        echo "w /sys/kernel/mm/transparent_hugepage/enabled    -    -    -     -     never" > /etc/tmpfiles.d/disable-thp.conf
+        echo "w /sys/kernel/mm/transparent_hugepage/defrag    -    -    -     -     never" >> /etc/tmpfiles.d/disable-thp.conf
+        systemd-tmpfiles --create --prefix=/sys/kernel/mm/transparent_hugepage/ /etc/tmpfiles.d/disable-thp.conf
+        echo "vm.overcommit_memory=1" >> /etc/sysctl.d/00-sysctl.conf
+        echo "vm.overcommit_ratio=50" >> /etc/sysctl.d/00-sysctl.conf
+        echo "vm.swappiness=0" >> /etc/sysctl.d/00-sysctl.conf
+        echo "vm.min_free_kbytes=32000" >> /etc/sysctl.d/00-sysctl.conf
+        service procps force-reload
+        swapoff -a
+        sed -i -e '/.*swap.*/d' /etc/fstab && systemctl daemon-reload
+        systemctl disable ModemManager --now
+        systemctl disable multipathd.socket --now
+        systemctl disable multipathd --now
+        systemctl stop packagekit
+        systemctl mask packagekit
+        mkdir /etc/systemd/resolved.conf.d
+        echo "[Resolve]" > /etc/systemd/resolved.conf.d/noresolved.conf
+        echo "LLMNR=no" >> /etc/systemd/resolved.conf.d/noresolved.conf
+        echo "DNSStubListener=no" >> /etc/systemd/resolved.conf.d/noresolved.conf
+        systemctl restart systemd-resolved
+        echo 'APT::Install-Recommends "0";' > /etc/apt/apt.conf.d/01norecommend
+        echo 'APT::Install-Suggests "0";' >> /etc/apt/apt.conf.d/01norecommend
+        curl -m 30 -fsSL https://get.docker.com -o get-docker.sh && sudo sh get-docker.sh && usermod -aG docker vagrant
+        sh -c 'DEBIAN_FRONTEND=noninteractive apt-get -y -qq install chrony'
+      SHELL
+    end
+  end
+end
